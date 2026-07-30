@@ -96,10 +96,110 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 
 
-## [Unreleased] — обновлено 2026-07-14
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## [Unreleased] — обновлено 2026-07-29
 
 ### Added
 
+- `8ab5386` feat(wp499): Ф16 — доставка iwe-local-gateway в шаблон: setup/optional/setup-local-gateway.sh (клон на пин v0.1.0, сборка, запуск демона, блок для .mcp.json), правка docs/AGENT-VENDOR-SETUP.md (шаг 3.2 больше не ссылается на несуществующую запись), секция в setup/optional/README.md
+- `813dbbf` fix(wp499): Ф16 фиксы по независимому ревью — liveness-проба демона (сокет-файл переживает ребут), lock против гонки двух запусков, скрипт добавлен в update-manifest.json (доставка существующим инсталляциям), workspace из положения скрипта, пин по SHA, проверка версии node
+- `3cd8d01` feat(wp-429-f6.5): пре-фильтры фабрикации ID и cross-report дублей в extractor.sh
+- `9fcc6d9` feat(apply-captures): Ф6.4 фасетный классификатор (шаг 4в-0) + routing.yaml как SoT для 4в
+- `35944f3` feat(wp505): create-wp.sh --state (обязателен при реестре осей) + --hypothesis, ячейка «Ставка»; /wp-new и protocol-open — ставка и гипотеза в ритуале создания РП
+
+### Changed
+
+- `c34f8ab` chore(release): weekly auto-bump to v0.36.2
+- `da9faad` sync: iwe-agent-dispatcher.py from DS-my-strategy (WP-503 Ф5.1/5.2)
+- `c516145` security: WP-500 Ф1 — синхронизировать фикс утечки трейсов в облако
+- `5e13c05` docs(changelog): thank vakungur (#312/#311/#310) and VxxxlBxxxxv (#308)
+
+### Fixed
+
+- `cd92300` fix(wp499): Ф16 хвост — bump iwe-local-gateway пин к v0.1.1 (демон писал pid всегда в ~/.iwe/gateway.pid независимо от кастомного сокета, issue TserenTserenov/iwe-local-gateway#1; фикс портирован в канонический репо, ранее ушёл только в приватный репо-двойник)
+- `7717c76` fix(mcp): утечка личного пути автора в .mcp.json (→ {{HOME_DIR}}) + скилл personal-guide-render указывал на несуществующий инструмент локального шлюза
+- `0873dde` fix: promote day-open-pipeline.sh — facts_digest guard fix (WP-484)
+- `cef6352` fix(hooks): revert WeekPlan section-list gate — broke 23/24 real WeekPlans (issue #318 hotfix)
+- `fe0b908` fix(setup): githooks provisioning for DS-strategy + WeekPlan validator drift (#317, #318)
+- `022d290` fix(apply-captures): привести гейт 4а.1 к дословному эталону из bug-файла
+- `c0113ce` fix(apply-captures): гейт Forces/Bias-Annotation для новых карточек методов
+- `afdce30` fix(create-wp): три дефекта в WeekPlan-writer и slug-обрезке
+- `16edace` fix(setup): понятная подсказка вместо traceback при отсутствии PyYAML (шаг 4e)
+- `a73e9e8` fix(cloud-scheduler): явный skip backup-memory job, если exocortex/ в .gitignore
+- `d3f63d2` fix(seed-drift): синхронизировать seed-копию day-open-scaffold.sh
+- `877c587` fix(ci): устранить 2 красных джоба на main — hardcode-паттерн + badge-дрейф
+- `4303c8e` fix(template): genericize username in examples + narrow author-check exemption
+- `c7a0494` fix(#315,#316): регрессии из ee0795c — независимый код-ревью субагентом
+- `be48c84` fix(template): de-link private-repo references + close case-sensitivity gap in validator
+- `ffed001` fix(template): remove author-specific DS-my-strategy leak (validate-template FAIL)
+- `ee0795c` fix(#316,#315,#314): issue funnel — 3 бага свежих установок
+- `9324f54` fix(review): 2 regressions in e190ba2 found by independent code review
+- `c4e4152` fix: добавить поддержку колонки «Ставка» в create-wp.sh (WP-505)
+- `e190ba2` fix(#312,#311,#308): issue funnel — устаревшая инструкция, ложный блок гейта, author-leak на ADR + exec-bit
+- `c02f663` fix(strategist): table_to_list() column mapping — DayPlan/WeekPlan diverged formats
+
+
+## [0.36.2] — 2026-07-26
+
+Спасибо **vakungur** за три находки: #312 (`/wp-new` обещал заготовку §Закрытия в архиве, которую `create-wp.sh` больше не создаёт с #280 — инструкция скилла обновлена на актуальные 4 места записи), #311 (Extensions Gate блокировал создание СВОЕГО навыка — документированный `extend/SKILL.md` путь реально не работал; хук теперь сверяется с манифестом платформы, а не блокирует по одной лишь маске каталога). Отдельно поднятый вопрос #310 (IntegrationGate заявлен блокирующим, а детектор нигде не подключён к хукам) подтверждён, но требует решения по объёму фикса — issue остаётся открытым.
+
+Спасибо **VxxxlBxxxxv** за #308 — поставляемые `docs/adr/*.md` попадали под собственный pre-commit-чек на author-leak (`DS-ai-systems`), хотя это апстримные исторические документы, не пользовательская правка. Заодно найдена и починена потеря бита исполнения на `.githooks/commit-msg` и 2 скриптах при `update.sh` (файлы доставляются через `curl`, без file-mode метаданных).
+
+## [0.36.1] — 2026-07-22
+
+### Added
+
+- feat(wp483): sync guide-kit v0.1.2 into template (снимок Ф9 система №16 + слияние приоритета Портного + degree-контекст)
+- `4484b4c` feat(skill-promote): защита L3-констант через inline-маркер (WP-5)
+- `5aabac2` feat(wp483): sync guide-kit v0.1.1 into template
+
+### Changed
+
+- `c40b041` docs(changelog): thank SDaiBots (#217/#221/#224/#228), AONarchuk (#215), trover97 (#218) — пропущены в прошлых раундах благодарностей
+- `b08403d` chore: release 0.36.0
+- `fb9afa6` docs(changelog): regenerate [Unreleased] after guide-kit v0.1.1 sync
+
+### Fixed
+
+- `3f91860` fix(release): sync README version badge to 0.36.0
+- `b0f675b` fix(scripts): env-fallback для GOVERNANCE_REPO в generate-hot-files-list.sh
+- `1b29b19` fix(strategist): убрать хардкод DS-strategy в DAY_OPEN_PIPELINE (регрессия 238a5c1)
+- `5cd5695` fix(roles): runtime-резолв путей в extractor/synchronizer вместо build-time плейсхолдеров
+
+
+## [0.36.0] — 2026-07-19
+
+### Added
+
+- `5aabac2` feat(wp483): sync guide-kit v0.1.1 into template
+- `ae900f3` feat(wp485): доставить 4 скрипта Kimi Standalone из root в шаблон
+- `262c313` feat(l1-skills): добавить USER-SPACE маркеры в agent-fault и audit-installation
+- `017235c` feat(wp483-f4): deliver guide-kit v0.1.0 to the template (demo catalog + work_section)
+- `fee0f85` feat(template-sync): промоция слим-ядра CLAUDE.md + hot-каркаса из авторского IWE
+- `8c9c305` feat(wp415): provenance-free iwesys publication
+- `63c2ec5` feat(wp415): Cyrillic gate — publish-to-iwesys rejects any Cyrillic
+- `58b8602` feat(residency-gate): mandatory schema_version + pilot-approved pre-grant.yaml (WP-476 F1 cond. 2/6, pilot decisions 2026-07-16)
+- `078f66c` feat(wp483-f4): guide-kit → template sync tooling (vendored-by-tag model)
+- `d450902` feat(day-close): token-discipline execution model — digest + subagent phases (#234)
+- `f4ca48e` feat(manifest): update-manifest.local.json — fork-local exclusions survive update.sh (#247)
+- `c65f9d0` feat(WP-450 S-50): promote hot-files.list auto-discovery to FMT
+- `33ebbf9` feat(WP-450): promote verify-context-budget.sh to FMT (S-50)
+- `4bebc58` feat: complete gate-metrics.sh promotion — manifest coverage + changelog
 - `39421f0` feat(strategist): вызвать week-open-day-section-patch после session-prep (WP-484 Ф3)
 - `dd011fa` feat(hindsight): deliver hindsight_trigger.py + hindsight_adapter.py, closing L2 integration gap (#252)
 - `046aec3` feat(wp-450-ф5): промоция hooks-bypass-gate.md + integration-gate.md
@@ -131,6 +231,15 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- `e9cf822` refactor(scripts): удалить избыточный незащищённый template-sync.sh
+- `917d950` docs: regenerate [Unreleased] CHANGELOG after guide-kit v0.1.0 delivery (017235c)
+- `3b1941a` revert(claude-md): вернуть шаблонный distinctions.md — не мирроить авторский
+- `dd273fd` docs(changelog): thank July issue reporters — maxborovik, art-artemov, 277zdwvw9f-pixel, alexfirstoff, alexmetasky, AVNechaev, VxxxlBxxxxv
+- `d68413b` docs: regenerate [Unreleased] CHANGELOG after #234 promotion
+- `a5697c3` docs: regenerate [Unreleased] CHANGELOG after #247 local-manifest feature
+- `387dd77` docs: regenerate [Unreleased] CHANGELOG after issue sweep (#264/#240/#222/#223/#254/#234)
+- `750eaf6` chore: remove __pycache__ .pyc from tree + gitignore (sync 238a5c1 garbage)
+- `8e69322` docs: regenerate [Unreleased] CHANGELOG after #263 fix
 - `806ba4c` docs(changelog): add cec81a3 (DayPlan follow-up to #248)
 - `82b1cc8` docs(changelog): sync Unreleased section — #248/#251/#252 fixes, thank VxxxlBxxxxv
 - `67571f3` docs(changelog): thank den317 for #247/#249/#250 reports
@@ -153,6 +262,33 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `b0f675b` fix(scripts): env-fallback для GOVERNANCE_REPO в generate-hot-files-list.sh (CI-блокер, найден при релизе)
+- `1b29b19` fix(strategist): убрать хардкод DS-strategy в DAY_OPEN_PIPELINE (регрессия 238a5c1, блокировала CI)
+- `5cd5695` fix(roles): runtime-резолв путей в extractor/synchronizer вместо build-time плейсхолдеров (issue #271)
+- `5dcff24` fix(wp485): доставить 4 скрипта, обещанных уже промотированными SKILL.md (Ф4)
+- `0b20534` fix(templ): issue funnel 266 — доставка session-guard.sh + SessionEnd fail-safe
+- `eb612ec` fix(day-open/day-close): дедупликация repo-symlink алиасов в циклах по репозиториям
+- `8d4217b` fix(templ): issue funnel 266 — .gitignore для audit-логов + опечатка в CLAUDE.md
+- `662188d` fix(claude-md): добавить недостающий .claude/rules-lazy/blocking-rules-full.md
+- `188653a` fix(wp415): 3 gaps found by review — CHANGELOG heading drop, broken in-page anchors, incomplete author-attribution regex
+- `d69d6f6` fix(wp485): Ф3 ч.2 — синхронизация 5 скриптов root↔шаблон
+- `af12f9c` fix(residency-gate): mark_pre_granted becomes a warning no-op (verifier finding, WP-476)
+- `b1679da` fix(wp-485): подключить check-wp-transfer-completeness.sh к Week Close шаблона
+- `c5488d4` fix(wp-485): 4 живых бага в скриптах шаблона — восстановление регрессии
+- `1c62621` fix(day-close): language-tolerant postcondition patterns 9a/9b (#234)
+- `5ab284f` fix(executor-catalog): VALID_EXECUTORS += agent, script+judgment (#222)
+- `655d385` fix(setup,update): quote env values (#223) + merge-managed base↔remote detector (#254)
+- `6ffb54a` fix(pre-commit): manifest-coverage — block только staged, whole-repo WARN (#240)
+- `e67ca20` fix(dry-run-gate): restore #237 v2 matcher + whitelist read-only bash helpers (#264)
+- `8a611bf` fix(validate-template): restore staged mode + dynamic TEMPLATE_DIR (sync 238a5c1 regression)
+- `7e5be12` fix: resolve WP-REGISTRY schema drift cluster (#263)
+- `fc763e4` fix(WP-450): promote missing checklists.md pointer + ailev↔IWE glossary
+- `8b61285` fix(changelog): restore 0200a93 entry dropped by the auto-regeneration step
+- `0e933ee` fix(audit-installation): mark github_status as subscription-gated
+- `d55b855` fix(day-close): correct check-index-health.py path
+- `51f30fc` fix(iwe-drift): resolve script: helpers relative to the template, not IWE_ROOT
+- `b0d1fe0` fix(day-open-scaffold): resolve template-owned scripts locally, not via governance repo
+- `40c2d70` fix(strategist): retire redundant day-plan scenario on non-strategy-days (WP-484)
 - `a007d15` fix(create-wp): три отставших фикса из root-версии — папка WP-434, consent-file, WeekPlan replace-limit
 - `3c82107` fix(day-open): CP_PROFILE указывал на несуществующий cp-profile.json
 - `7cbd225` fix: 3 template bugs from bot-flagged issue sweep (#253, #255, #256)
@@ -225,8 +361,6 @@ Versioning: [Semantic Versioning](https://semver.org/).
 - `0b5e140` fix(extractor): guard против запуска сырого файла шаблона + правка примеров
 - `b4d08a2` fix(v0.35.5): orphan-detection TypeError + DS-strategy validator + root detection (#214 #215)
 - `212fa2f` fix(setup): include rules-lazy in dry-run and section message
-- `b7d75a8` fix(template): verify-template-integrity mirrors CI contract+smoke jobs
-- `0200a93` fix(template): close manifest drift + setup/update rules-lazy gap, wire parity gate
 
 
 ## [0.35.5] — 2026-06-30

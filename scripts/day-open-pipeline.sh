@@ -13,7 +13,7 @@
 
 set -uo pipefail
 
-IWE="${IWE_ROOT:-$HOME/IWE}"
+IWE="${IWE_ROOT:-${IWE_WORKSPACE:-$HOME/IWE}}"
 CONFIG="$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/exocortex/day-rhythm-config.yaml"
 
 # ============================================

@@ -45,7 +45,7 @@ CONFIG="$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/exocortex/day-rhythm-config.yam
 SERVER_MODE="${IWE_SERVER_MODE:-0}"  # WP-283: 1 = Linux server, Mac-only MCP недоступен
 
 # --- Pre-flight healthcheck (WP-7 ФDay-Open-Hardening) ---
-PREFLIGHT_JSON=$(bash "$IWE/scripts/day-open-preflight.sh" "$DATE" "$CONFIG" 2>/dev/null || echo '{"calendar":"unknown","scout":"unknown","triage":"unknown"}')
+PREFLIGHT_JSON=$(bash "${IWE_TEMPLATE:-$IWE/FMT-exocortex-template}/scripts/day-open-preflight.sh" "$DATE" "$CONFIG" 2>/dev/null || echo '{"calendar":"unknown","scout":"unknown","triage":"unknown"}')
 CALENDAR_PF=$(echo "$PREFLIGHT_JSON" | jq -r '.calendar // "unknown"')
 SCOUT_PF=$(echo "$PREFLIGHT_JSON" | jq -r '.scout // "unknown"')
 TRIAGE_PF=$(echo "$PREFLIGHT_JSON" | jq -r '.triage // "unknown"')
@@ -362,7 +362,7 @@ render_world() {
     echo "</details>"
     return 0
   fi
-  bash "$IWE/scripts/server-news.sh" "$CONFIG" 2>/dev/null || {
+  bash "${IWE_TEMPLATE:-$IWE/FMT-exocortex-template}/scripts/server-news.sh" "$CONFIG" 2>/dev/null || {
     echo "<!-- PENDING: world — RSS feeds недоступны (server-news.sh завершился с ошибкой). Каждый пункт = markdown URL. -->"
     echo ""
     echo "> ⚠️ Data-contract: каждый тезис в секции «Мир» обязан содержать markdown-ссылку на источник [заголовок](url)."
@@ -959,7 +959,7 @@ SELF_DEV_BLOCK=$(render_self_dev)
 # section was removed as a duplicate of current/priorities.yaml + current/active-wp.md.
 # SWEEP_WP_LIST: WP-NNN IDs for the "План на сегодня" PENDING instructions (line ~973) —
 # tells the LLM which open WPs beyond priorities.yaml to consider for today's plan.
-SWEEP_WP_FULL=$(bash "$IWE/scripts/active-wp-sweep.sh" "$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/inbox" "$IWE" 2>/dev/null \
+SWEEP_WP_FULL=$(bash "${IWE_TEMPLATE:-$IWE/FMT-exocortex-template}/scripts/active-wp-sweep.sh" "$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/inbox" "$IWE" 2>/dev/null \
   || echo "<!-- active-wp-sweep: ошибка запуска -->")
 SWEEP_WP_LIST=$(echo "$SWEEP_WP_FULL" \
   | grep -oE '\*\*WP-[0-9]+\*\*' | tr -d '*' | tr '\n' ' ' | sed 's/  */ /g' || true)

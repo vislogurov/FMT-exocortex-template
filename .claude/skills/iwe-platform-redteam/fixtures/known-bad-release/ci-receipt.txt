@@ -1,3 +1,0 @@
-status: green
-required_checks: passed
-synthetic: true

@@ -4,10 +4,23 @@
 
 set -e
 
-# Предотвращаем сон: -i (idle, работает на батарее) -d (display) -u (user activity)
-# Флаг -s (system sleep) не используем — он НЕ работает на батарее (OBC может переключить профиль)
-# Linux: caffeinate отсутствует — guard через command -v (на Linux достаточно, что cron/systemd сам управляет sleep)
-command -v caffeinate >/dev/null 2>&1 && caffeinate -diu -w $$ &
+# Sleep inhibitor for the WHOLE script lifetime (issue #553: direct launchd
+# units invoke this script bypassing scheduler.sh, so the inhibitor must live
+# here too — parity with roles/synchronizer/scripts/scheduler.sh).
+# macOS: caffeinate -diu (idle+display+user; works on battery; -s is NOT used —
+# it is ignored on battery power). `-w $$` ties the inhibitor to this shell
+# process, which stays alive for the entire scenario incl. the commit→push tail.
+# Known OS limit: lid-close on battery cannot be held by caffeinate at all
+# (-s works on AC only) — schedule night runs on AC or with the lid open.
+# Linux: systemd-inhibit when available; direct systemd timers do not inhibit
+# sleep by themselves.
+if [[ "$(uname)" == "Darwin" ]]; then
+    caffeinate -diu -w $$ &
+elif command -v systemd-inhibit &>/dev/null; then
+    systemd-inhibit --what=idle:sleep --who=strategist --why="agent scenario" --mode=block sleep infinity &
+    _INHIBIT_PID=$!
+    trap 'kill $_INHIBIT_PID 2>/dev/null' EXIT
+fi
 
 # Конфигурация
 # WP-273 R5 fix (Round 5 Евгения): substituted runner живёт в .iwe-runtime/,
@@ -25,6 +38,19 @@ WORKSPACE="${IWE_WORKSPACE:-$HOME/IWE}/${IWE_GOVERNANCE_REPO:-DS-strategy}"
 EXPECTED_GOV=$(grep 'IWE_GOVERNANCE_REPO=' "$HOME/.iwe-paths" 2>/dev/null | sed 's/.*="//;s/"$//' || echo "DS-strategy")
 if [ "${IWE_GOVERNANCE_REPO:-}" ] && [ "$IWE_GOVERNANCE_REPO" != "$EXPECTED_GOV" ]; then
     echo "WARN: IWE_GOVERNANCE_REPO=$IWE_GOVERNANCE_REPO, expected $EXPECTED_GOV (from ~/.iwe-paths)" >&2
+fi
+
+# WP-529 F6 (Evgenii post-update defect #1, 18.08): update.sh reinstalls
+# auto-roles while .update-incomplete is still present (the transaction closes
+# at the very end), and launchctl load fires RunAtLoad right away — a mutating
+# agent run started mid-update at 22:38. Skip every scenario while an update
+# is open; the next scheduled run picks it up. Template root is resolved as
+# $IWE_TEMPLATE first, then ${IWE_WORKSPACE:-$HOME/IWE}/FMT-exocortex-template
+# (NOT identical to the PROMPTS_DIR fallback below, which hardcodes $HOME/IWE).
+UPDATE_MARKER="${IWE_TEMPLATE:-${IWE_WORKSPACE:-$HOME/IWE}/FMT-exocortex-template}/.update-incomplete"
+if [ -f "$UPDATE_MARKER" ]; then
+    echo "[$(date '+%H:%M:%S')] SKIP: template update in progress ($UPDATE_MARKER present) — no mutating run during update" >&2
+    exit 0
 fi
 
 # PROMPTS_DIR резолв: $IWE_TEMPLATE (Generated runtime) → $HOME/IWE/FMT-exocortex-template (default) → relative (legacy fallback)
@@ -46,10 +72,16 @@ if [ -n "${CLAUDE_CLI_PATH:-}" ]; then
     CLAUDE_PATH="$CLAUDE_CLI_PATH"
 elif command -v claude &>/dev/null; then
     CLAUDE_PATH="$(command -v claude)"
+elif [ -x "$HOME/.local/bin/claude" ]; then
+    CLAUDE_PATH="$HOME/.local/bin/claude"
 elif [ -x "$HOME/.npm-global/bin/claude" ]; then
     CLAUDE_PATH="$HOME/.npm-global/bin/claude"
 else
     CLAUDE_PATH="{{CLAUDE_PATH}}"  # fallback: build-runtime должен был подставить
+fi
+if [ ! -x "$CLAUDE_PATH" ]; then
+    echo "[$(date '+%H:%M:%S')] ERROR: claude CLI не найден (CLAUDE_CLI_PATH/PATH/~/.local/bin/~/.npm-global/fallback='$CLAUDE_PATH')." >&2
+    exit 127
 fi
 CLAUDE_TIMEOUT=1800  # 30 мин — защита от зависания Claude CLI
 
@@ -278,16 +310,31 @@ case "$1" in
             # was the root cause of the 2026-06-21 structure/priority drift.
             log "Morning: running canonical Day Open pipeline"
             DAY_OPEN_PIPELINE="$WORKSPACE/scripts/day-open-pipeline.sh"
-            if [ -f "$DAY_OPEN_PIPELINE" ] && bash "$DAY_OPEN_PIPELINE" >> "$LOG_FILE" 2>&1; then
+            if [ ! -f "$DAY_OPEN_PIPELINE" ]; then
+                # WP-529 F6: on user installs workspace-root scripts/ is not
+                # delivered at all (Evgenii defects #2/#3, 18.08) — say so
+                # instead of a generic "unavailable/failed". The delivery
+                # graph itself is WP-529 F7 scope, no silent bridge here.
+                log "WARN: Day Open pipeline not found at $DAY_OPEN_PIPELINE — canonical pipeline is not delivered on this install (WP-529 F7); fallback to free-form day-plan prompt"
+                run_claude "day-plan" "claude-sonnet-4-6"
+                notify_telegram "day-plan"
+            elif bash "$DAY_OPEN_PIPELINE" >> "$LOG_FILE" 2>&1; then
                 log "Morning: Day Open pipeline OK (scaffold + llm-fill)"
             else
-                log "WARN: Day Open pipeline unavailable/failed — fallback to free-form day-plan prompt"
+                log "WARN: Day Open pipeline failed (see lines above in this log) — fallback to free-form day-plan prompt"
                 run_claude "day-plan" "claude-sonnet-4-6"
                 notify_telegram "day-plan"
             fi
         fi
         ;;
     "evening")
+        # WP-529 F6: evening was the only scheduled scenario without the
+        # RunAtLoad/CalendarInterval race lock and the ran-today check.
+        acquire_lock "evening"
+        if already_ran_today "evening"; then
+            log "SKIP: evening already completed today"
+            exit 0
+        fi
         log "Evening: running evening review"
         run_claude "evening"
         notify_telegram "evening"

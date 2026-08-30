@@ -27,7 +27,14 @@ set -uo pipefail
 # Load unified environment: WORKSPACE_DIR, IWE_ROOT, IWE_SCRIPTS, etc.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEMPLATE_SCRIPTS_DIR="$SCRIPT_DIR"
-source "$TEMPLATE_SCRIPTS_DIR/lib/common.sh"
+# issue #455: a stale promoted copy without lib/ next to it used to degrade
+# silently (set -uo pipefail, no -e) — every path resolved to root, and the
+# scheduler-state check quietly took the wrong branch for three weeks before
+# anyone noticed. Missing the library is fatal now, not a silent no-op.
+source "$TEMPLATE_SCRIPTS_DIR/lib/common.sh" || {
+    echo "FATAL: lib/common.sh not found next to $0 — промотированная копия устарела, обновите её вместе с шаблоном" >&2
+    exit 1
+}
 # issue #329: old fallback assumed $SCRIPT_DIR/.. is always the workspace root —
 # false for a promoted copy at <governance-repo>/scripts/, which doubled the repo
 # name into every path. iwe_resolve_root() uses env-var precedence instead of
@@ -37,10 +44,20 @@ IWE_ROOT="$IWE"
 export IWE_ROOT IWE
 DATE="${1:-$(date +%Y-%m-%d)}"
 CONFIG="$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/exocortex/day-rhythm-config.yaml"
+PARAMS_FILE="$IWE/params.yaml"
+MULTIPLIER_ENABLED="true"
+if [ -f "$PARAMS_FILE" ] && grep -qE '^multiplier_enabled:[[:space:]]*false([[:space:]]*(#.*)?)?$' "$PARAMS_FILE"; then
+  MULTIPLIER_ENABLED="false"
+fi
+if [ "$MULTIPLIER_ENABLED" = "false" ]; then
+  BUDGET_FORMAT_HINT='<!-- PENDING: budget — посчитать после плана; multiplier_enabled: false → только «~Yh РП всего», без физического времени/WakaTime/мультипликатора. -->'
+else
+  BUDGET_FORMAT_HINT='<!-- PENDING: budget — посчитать после плана, формат см. templates-dayplan.md (бюджет РП всего / физ / мультипликатор). -->'
+fi
 SERVER_MODE="${IWE_SERVER_MODE:-0}"  # WP-283: 1 = Linux server, Mac-only MCP недоступен
 
 # --- Pre-flight healthcheck (WP-7 ФDay-Open-Hardening) ---
-PREFLIGHT_JSON=$(bash "${IWE_TEMPLATE:-$IWE/FMT-exocortex-template}/scripts/day-open-preflight.sh" "$DATE" "$CONFIG" 2>/dev/null || echo '{"calendar":"unknown","scout":"unknown","triage":"unknown"}')
+PREFLIGHT_JSON=$(bash "$IWE/scripts/day-open-preflight.sh" "$DATE" "$CONFIG" 2>/dev/null || echo '{"calendar":"unknown","scout":"unknown","triage":"unknown"}')
 CALENDAR_PF=$(echo "$PREFLIGHT_JSON" | jq -r '.calendar // "unknown"')
 SCOUT_PF=$(echo "$PREFLIGHT_JSON" | jq -r '.scout // "unknown"')
 TRIAGE_PF=$(echo "$PREFLIGHT_JSON" | jq -r '.triage // "unknown"')
@@ -96,11 +113,29 @@ YDAY_MONTH_RU="${MONTH_NAMES[$YDAY_MNUM]}"
 # fields and cannot occur in a meaningful config value.
 _YAML_KEYS=()
 _YAML_VALS=()
-if [ -f "$CONFIG" ] && command -v python3 >/dev/null 2>&1; then
+# Cold review 2026-08-19 (Codex, Critical): under `set -u`, referencing
+# _RESOLVED_PYTHON3 below when $CONFIG is absent (the "no config" branch never
+# runs, so the variable is never assigned) crashed the whole script instead of
+# the intended silent-empty-arrays fallback. Initialized unconditionally here,
+# before the config check, so it's always defined either way.
+_RESOLVED_PYTHON3=""
+if [ -f "$CONFIG" ]; then
+  # WP-529 (continuation, 19.08): the F6 shared resolver (scripts/lib/find-python3.sh)
+  # is invoked here, inside the existing [ -f "$CONFIG" ] guard, not at script
+  # top-level — this branch is already conditional on the config existing, and a
+  # top-level resolve would run PyYAML detection even for invocations that never
+  # reach a yaml-dependent path (peer-session 2026-08-19-29, codex turn 1: lazy
+  # placement, not unconditional). No bare-python3 fallback on resolver failure:
+  # the resolver's own first candidate IS bare `python3` from PATH — if it
+  # still failed, PATH's python3 already lacks yaml too, so falling back to it
+  # would just reproduce the exact defect this migration fixes.
+  _RESOLVED_PYTHON3=$("$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/find-python3.sh" 2>/dev/null) || _RESOLVED_PYTHON3=""
+fi
+if [ -n "$_RESOLVED_PYTHON3" ]; then
   while IFS=$'\x1f' read -r k v; do
     _YAML_KEYS+=("$k")
     _YAML_VALS+=("$v")
-  done < <(python3 -c "
+  done < <("$_RESOLVED_PYTHON3" -c "
 import yaml, sys
 
 def flatten(d, prefix=''):
@@ -240,6 +275,43 @@ extract_strategy_context() {
   echo "не найден"
 }
 
+# issue #477: mandatory_daily_wps used to be a plain instruction line telling
+# the LLM to "apply" the config key — an LLM reading day-rhythm-config.yaml
+# can't distinguish a commented-out example from an active setting, so the
+# example in the shipped config (still commented out on a fresh install) was
+# read as if active. This extractor uses the same PyYAML resolver as
+# read_yaml() above (_RESOLVED_PYTHON3), so a commented key is invisible to
+# it exactly like every other read_yaml() call — nothing LLM-interpreted.
+# List-of-objects shape (wp+min_minutes / category+min_count) doesn't fit
+# read_yaml()'s flatten(), hence a dedicated extractor rather than reuse.
+extract_mandatory_daily_wps() {
+  if [ -z "$_RESOLVED_PYTHON3" ]; then
+    echo ""
+    return 0
+  fi
+  "$_RESOLVED_PYTHON3" -c "
+import yaml, sys
+try:
+    with open('$CONFIG') as f:
+        d = yaml.safe_load(f) or {}
+    items = d.get('mandatory_daily_wps') or []
+    for item in items:
+        if not isinstance(item, dict):
+            print(f'skip: not a dict: {item!r}', file=sys.stderr)
+            continue
+        if 'wp' in item:
+            print(f\"WP-{item['wp']} (min {item.get('min_minutes', '?')} мин)\")
+        elif 'category' in item:
+            print(f\"категория «{item['category']}» (min {item.get('min_count', '?')} шт.)\")
+        else:
+            print(f'skip: neither wp nor category key: {item!r}', file=sys.stderr)
+except Exception as e:
+    # Same explicit-sentinel principle as read_yaml() above (bug-2026-06-05 class):
+    # a parse failure must not look identical to "key legitimately absent".
+    print(f'extract_mandatory_daily_wps: config read failed: {e}', file=sys.stderr)
+"
+}
+
 read_morning_priorities() {
   local prio_file="$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/current/priorities.yaml"
 
@@ -360,7 +432,7 @@ render_world() {
     echo "</details>"
     return 0
   fi
-  bash "${IWE_TEMPLATE:-$IWE/FMT-exocortex-template}/scripts/server-news.sh" "$CONFIG" 2>/dev/null || {
+  bash "$IWE/scripts/server-news.sh" "$CONFIG" 2>/dev/null || {
     echo "<!-- PENDING: world — RSS feeds недоступны (server-news.sh завершился с ошибкой). Каждый пункт = markdown URL. -->"
     echo ""
     echo "> ⚠️ Data-contract: каждый тезис в секции «Мир» обязан содержать markdown-ссылку на источник [заголовок](url)."
@@ -534,21 +606,40 @@ render_iwe_status() {
   echo "| Подсистема | Статус | Детали |"
   echo "|------------|--------|--------|"
 
-  # Per-role launchd agents (старый com.exocortex.scheduler отключён с марта 2026)
-  # com.strategist.morning намеренно отключён 2026-06-13 (bug-2026-06-12-day-open-dual-writer-race.md):
-  # сервер = единственный владелец Day Open. На Mac владельцем конвейера Day Open теперь
-  # является com.iwe.day-open (WP-356). Проверяем его + остальные per-role агенты.
+  # Per-role launchd agents. issue #412: раньше список из четырёх агентов был
+  # зашит в коде (com.iwe.day-open/com.strategist.notereview/com.pulse.daily/
+  # com.aisystant.profiler.recalculate) — на инсталляции, где реально стоят
+  # другие per-role юниты (например com.strategist.morning/weekreview),
+  # строка не могла стать зелёной: зашитые агенты вечно "missing", а реально
+  # установленные вообще не проверялись. Вместо списка ожиданий — читаем,
+  # что реально лежит в ~/Library/LaunchAgents/ на этой машине, и проверяем
+  # ровно это (тот же принцип, что не-деплой ⚪ ≠ авария у Scheduler/триаж
+  # выше). Фильтр ограничен известными IWE-префиксами (не голый `com.*.plist`,
+  # code review нашёл: захватывал бы любой сторонний plist — Docker, Adobe,
+  # Google Keystone и т.п., воспроизводя тот же симптом «никогда не
+  # зелёная» зеркально, ложными срабатываниями вместо пропусков).
   if command -v launchctl &>/dev/null; then
-    local agents_bad=""
-    for agent in com.iwe.day-open com.strategist.notereview com.pulse.daily com.aisystant.profiler.recalculate; do
-      local line status
-      line=$(launchctl list 2>/dev/null | awk -v a="$agent" '$3==a{print}')
-      [ -z "$line" ] && { agents_bad="$agents_bad $agent(missing)"; continue; }
-      status=$(echo "$line" | awk '{print $2}')
-      [ "$status" != "0" ] && [ "$status" != "-" ] && agents_bad="$agents_bad $agent(exit=$status)"
-    done
-    if [ -z "$agents_bad" ]; then
-      echo "| LaunchAgents | 🟢 | per-role агенты OK |"
+    local plist_dir="$HOME/Library/LaunchAgents"
+    local agents_bad="" agents_checked=0
+    if [ -d "$plist_dir" ]; then
+      for plist in "$plist_dir"/com.iwe.*.plist "$plist_dir"/com.strategist.*.plist \
+                   "$plist_dir"/com.pulse.*.plist "$plist_dir"/com.aisystant.*.plist \
+                   "$plist_dir"/com.exocortex.*.plist "$plist_dir"/com.extractor.*.plist; do
+        [ -e "$plist" ] || continue
+        local agent
+        agent=$(basename "$plist" .plist)
+        agents_checked=$((agents_checked + 1))
+        local line status
+        line=$(launchctl list 2>/dev/null | awk -v a="$agent" '$3==a{print}')
+        [ -z "$line" ] && { agents_bad="$agents_bad $agent(not loaded)"; continue; }
+        status=$(echo "$line" | awk '{print $2}')
+        [ "$status" != "0" ] && [ "$status" != "-" ] && agents_bad="$agents_bad $agent(exit=$status)"
+      done
+    fi
+    if [ "$agents_checked" -eq 0 ]; then
+      echo "| LaunchAgents | ⚪ | ни одного plist в ~/Library/LaunchAgents — планировщик здесь не устанавливали |"
+    elif [ -z "$agents_bad" ]; then
+      echo "| LaunchAgents | 🟢 | per-role агенты OK ($agents_checked) |"
     else
       echo "| LaunchAgents | 🟡 |${agents_bad} |"
     fi
@@ -609,8 +700,14 @@ render_iwe_status() {
   # WP-5 Ubuntu-audit факт #4: launchctl unconditionally also meant Linux always saw this
   # as false (launchctl doesn't exist there) — iwe_scheduler_active() (lib/common.sh)
   # branches launchd/systemd by what's actually on PATH.
+  # issue #347: the old boolean called this "has_launchd_unit" even though the check
+  # covers launchd, systemd, crontab and log evidence — and it could not tell
+  # "never deployed here" from "deployed and dead", so an install that simply never
+  # set up a scheduler got a red Mode A plus a fresh incident file every morning.
+  local scheduler_state
+  scheduler_state="$(iwe_scheduler_state)"
   local has_launchd_unit=false
-  if iwe_scheduler_active; then
+  if [ "$scheduler_state" = "active" ]; then
     has_launchd_unit=true
   fi
 
@@ -625,6 +722,15 @@ render_iwe_status() {
   if [ -f "$triage_file" ] || [ -f "$watchdog_log" ] || [ -f "$feedback_triage_log" ]; then
     # Mode B-1: отчёт/лог за сегодня есть → норм
     echo "| Scheduler/триаж | 🟢 | отчёт/лог за $DATE присутствует (Mode B норм) |"
+  elif [ "$scheduler_state" = "not_deployed" ]; then
+    # issue #347: планировщик здесь никогда не разворачивали — нет ни юнита, ни
+    # crontab-записи, ни единого лога за всю историю. Это не авария, а не-установка:
+    # ⚪ без инцидента. Настоящий Mode A остаётся ниже, под deployed_inactive.
+    echo "| Scheduler/триаж | ⚪ | планировщик не развёрнут на этой машине (ни юнита, ни crontab, ни логов) — установка: см. roles/ROLE-CONTRACT.md |"
+  elif [ "$scheduler_state" = "unknown" ]; then
+    # Проверить не удалось (нет пользовательской шины systemd в WSL/контейнере и т.п.).
+    # «Не смог проверить» не красится ни в зелёный, ни в красный и не рождает инцидент.
+    echo "| Scheduler/триаж | 🟡 | проверить состояние планировщика не удалось (запрос к менеджеру служб завершился ошибкой) — статус неизвестен |"
   elif [ "$has_launchd_unit" = "true" ] && [ "$in_grace_window" = "true" ]; then
     # Mode C: юнит загружен, но cron ещё не сработал (до 06:30)
     echo "| Scheduler/триаж | 🟡 | Mode C: юнит загружен, ожидание cron (06:00) — grace window до 06:30 |"
@@ -661,7 +767,27 @@ render_iwe_status() {
     elif [ -n "$last_watchdog_log" ]; then
       last_log_age_days=$(( ( $(date +%s) - $(stat -f %m "$last_watchdog_log" 2>/dev/null || stat -c %Y "$last_watchdog_log" 2>/dev/null || echo 0) ) / 86400 ))
     fi
-    echo "| Scheduler/триаж | 🔴 | **Mode A** (cron не отработал): юнит feedback-triage не зарегистрирован в launchctl, последний лог ${last_log_age_days}д назад |"
+    # issue #347: строка светофора не называла способ подавления — пользователь узнавал
+    # о маркере, только читая исходник этого скрипта.
+    # Абсолютный путь, а не относительный: проверяется абсолютный (см. incident_suppress
+    # ниже), и маркер, созданный из другого каталога, лёг бы мимо — подавление не
+    # сработало бы, а инцидент продолжал появляться каждое утро.
+    local suppress_path="$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/inbox/.incident-suppress-scheduler-cron-not-fired"
+    echo "| Scheduler/триаж | 🔴 | **Mode A** (планировщик разворачивали, но он не отрабатывает): последний лог ${last_log_age_days}д назад · подавить повтор: \`touch $suppress_path\` |"
+
+    # issue #347: инцидент советовал macOS-инструменты на любой ОС. Ветку выбираем по
+    # тому, какой менеджер служб реально есть на машине.
+    local launcher_hint unit_hint
+    if command -v launchctl >/dev/null 2>&1; then
+      launcher_hint="launchctl"
+      unit_hint="~/Library/LaunchAgents/ (plist-файлы com.exocortex.*, com.strategist.*, com.extractor.*)"
+    elif command -v systemctl >/dev/null 2>&1; then
+      launcher_hint="systemctl --user"
+      unit_hint="~/.config/systemd/user/ (таймеры iwe-*.timer; проверка — systemctl --user list-timers)"
+    else
+      launcher_hint="crontab"
+      unit_hint="crontab -l (записи scheduler.sh / iwe-*)"
+    fi
 
     # Auto-create incident-файл если ещё нет за сегодня И не подавлен явно (issue
     # #292: имя файла содержит дату — [ ! -f incident_file ] никогда не срабатывало
@@ -691,15 +817,16 @@ auto_generated: true
 
 ## Симптом (auto-detected)
 
-- launchctl: ни один из юнитов \`com.exocortex.scheduler\`, \`com.strategist.morning\`, \`com.strategist.weekreview\`, \`com.extractor.inbox-check\` не зарегистрирован
+- $launcher_hint: ни один юнит планировщика не зарегистрирован и не активен
+- Признаки прошлого разворачивания на этой машине есть — иначе строка была бы ⚪ «не развёрнут», а этот файл не создавался бы (issue #347)
 - Последний лог \`~/logs/synchronizer/feedback-watchdog-*.log\` старше 24ч (или отсутствует)
 - Mode A классификация (см. peer-сессия 2026-05-30-07 §Gap 3)
 
 ## Action items
 
-1. Проверить \`~/Library/LaunchAgents/\` на наличие plist
+1. Проверить $unit_hint
 2. Переустановить роли: \`bash setup.sh\` (секция [5/6]) — либо вручную по \`roles/ROLE-CONTRACT.md\`
-3. Запустить руками: \`bash \${IWE_SCRIPTS:-$IWE/FMT-exocortex-template/scripts}/../roles/synchronizer/scripts/scheduler.sh --dry-run\` (legacy-скрипт, актуален только если ваша инсталляция ещё не мигрировала на per-role юниты)
+3. Проверить ручной запуск центрального диспетчера: \`bash \${IWE_SCRIPTS:-$IWE/FMT-exocortex-template/scripts}/../roles/synchronizer/scripts/scheduler.sh dispatch\`
 
 ## Auto-generation note
 
@@ -707,7 +834,7 @@ auto_generated: true
 
 Если решено отложить fix и не получать новый инцидент-файл каждый день — создайте маркер:
 \`\`\`bash
-touch "\${IWE_GOVERNANCE_REPO:-DS-strategy}/inbox/.incident-suppress-scheduler-cron-not-fired"
+touch "$incident_suppress"
 \`\`\`
 Удалите маркер, чтобы возобновить авто-создание.
 INCEOF
@@ -741,10 +868,26 @@ INCEOF
   # заведомо не укладывается в тайм-бокс, обновление тихо теряется как "проверено".
   # --fast (issue #230) сравнивает только версию манифеста — секунда вместо минут.
   if [ -d "$IWE/FMT-exocortex-template" ]; then
-    local upd_status
-    upd_status=$(run_bounded "${ISSUE_SWEEP_TIMEOUT:-10}" bash -c \
-      "cd '$IWE/FMT-exocortex-template' && bash update.sh --check --fast 2>&1 | grep -oE 'Версия совпадает|Версия отличается' | head -1")
-    echo "| Update IWE | 🟢 | ${upd_status:-проверено} |"
+    # issue #406: три дефекта здесь раньше складывались в вечнозелёную строку —
+    # (1) эмодзи был зашит 🟢 без ветвления; (2) update.sh с тех пор (issue #230/
+    # #288) отдаёт 5 разных формулировок с префиксом ✓/⚠ — старый grep на
+    # буквальные "Версия совпадает"/"Версия отличается" не покрывал ни ветку
+    # «состав изменился», ни текущую формулировку успеха («…совпадают», не
+    # «совпадает»), и при пустом совпадении молча падал на 🟢; (3) секция
+    # «Требует внимания» собирает только 🟡/🔴 строки — раз эта строка не могла
+    # стать не-зелёной, доступное обновление никогда туда не попадало. Эмодзи
+    # теперь читается по первому символу реального вывода (✓ → 🟢, ⚠ → 🟡),
+    # а не угадывается заранее.
+    local upd_output upd_emoji upd_status
+    upd_output=$(run_bounded "${ISSUE_SWEEP_TIMEOUT:-10}" bash -c \
+      "cd '$IWE/FMT-exocortex-template' && bash update.sh --check --fast 2>&1")
+    upd_status=$(printf '%s\n' "$upd_output" | grep -E '^[✓⚠]' | head -1)
+    case "$upd_status" in
+        ✓*) upd_emoji="🟢" ;;
+        ⚠*) upd_emoji="🟡" ;;
+        *) upd_emoji="🟡"; upd_status="${upd_status:-не удалось определить статус (тайм-аут или пустой вывод update.sh --check --fast)}" ;;
+    esac
+    echo "| Update IWE | $upd_emoji | ${upd_status} |"
   fi
 
   # Base repos (FPF/SPF/ZP) — fetch + behind count
@@ -978,7 +1121,10 @@ render_yesterday() {
   # у пользователей шаблона без своего extension-файла просто не будет.
   if [ -x "$IWE/extensions/day-open.summary-extra.sh" ]; then
     local extra_summary
-    extra_summary=$("$IWE/extensions/day-open.summary-extra.sh" "$YDAY" 2>/dev/null)
+    if ! extra_summary=$("$IWE/extensions/day-open.summary-extra.sh" "$YDAY"); then
+      echo "day-open: extension day-open.summary-extra.sh failed; continuing without its output" >&2
+      extra_summary=""
+    fi
     [ -n "$extra_summary" ] && { echo "$extra_summary"; echo; }
   fi
   # Sessions consolidation (DAP1-B/1-C, WP-7): включить РП сессий вчерашнего дня
@@ -989,11 +1135,17 @@ render_yesterday() {
     # Fallback: сканировать sessions напрямую за вчера если DayReport отсутствует
     local sessions_dir="$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/sessions"
     local found=0
+    # WP-529 (continuation, 19.08): resolved once here, not inside the loop —
+    # this whole branch only runs when DayReport is missing (rare fallback), and
+    # resolving once before iterating avoids re-running find-python3.sh's full
+    # candidate walk on every session_dir.
+    local _resolved_python3
+    _resolved_python3=$("$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/find-python3.sh" 2>/dev/null) || _resolved_python3=""
     for session_dir in "$sessions_dir/${YDAY:0:7}"/${YDAY}-*/; do
       [ -d "$session_dir" ] || continue
-      if [ -f "$session_dir/meta.yaml" ]; then
+      if [ -f "$session_dir/meta.yaml" ] && [ -n "$_resolved_python3" ]; then
         local wp_id
-        wp_id=$(python3 -c "import yaml; d=yaml.safe_load(open('$session_dir/meta.yaml')); print(d.get('task_id','') or '')" 2>/dev/null)
+        wp_id=$("$_resolved_python3" -c "import yaml; d=yaml.safe_load(open('$session_dir/meta.yaml')); print(d.get('task_id','') or '')" 2>/dev/null)
         if [ -n "$wp_id" ]; then
           echo "- $wp_id"
           found=1
@@ -1043,7 +1195,18 @@ render_compact_dashboard() {
   # WP-5 Ubuntu-audit факт #4: this used the same pre-#261 legacy label regex as
   # the OTHER launchctl check in this file (fixed above) — AND was unconditional
   # launchctl, so Linux always read 🔴 regardless of the actual systemd timers.
-  echo "  Scheduler: $(iwe_scheduler_active && echo '🟢' || echo '🔴 не запущен')"
+  # issue #347: this line used to collapse every non-active result into 🔴, including
+  # "never deployed here" and "the check itself failed" — the same conflation the
+  # traffic-light row above carried. Both call sites now read the same four states.
+  local short_state short_label
+  short_state="$(iwe_scheduler_state)"
+  case "$short_state" in
+    active)            short_label="🟢" ;;
+    deployed_inactive) short_label="🔴 не запущен" ;;
+    not_deployed)      short_label="⚪ не развёрнут на этой машине" ;;
+    *)                 short_label="🟡 состояние неизвестно" ;;
+  esac
+  echo "  Scheduler: $short_label"
   local fpf_status fpf_fetch_ok
   # issue #241 (остаточная дыра): та же незащищённая git fetch, тот же класс зависания.
   # run_bounded не пробрасывает exit-код — результат передаём через маркер в stdout.
@@ -1061,8 +1224,9 @@ render_compact_dashboard() {
 }
 
 # --- Section: Саморазвитие (active draft, deterministic) ---
-# The active draft comes from draft-list.md, not the LLM. Handing this to the LLM
-# with the file absent produced a hallucinated "D-001" (2026-07-01). "Где остановился"
+# The active draft comes from the first entry in the "Приоритетные" table, not the LLM.
+# The template's full collection has a status column but does not define an "черновик"
+# value, while the priority table is the explicit current-work list. "Где остановился"
 # is the pilot's own progress — we never fabricate it (see feedback_no_invented_personal_history).
 render_self_dev() {
   local draft_list="$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/drafts/draft-list.md"
@@ -1070,20 +1234,28 @@ render_self_dev() {
     echo "**Активный черновик:** нет данных (drafts/draft-list.md не найден)"
     return
   fi
-  # Registry rows are newest-first; take the first one whose stage column is "черновик".
+  # Take the first data row from the template-defined "Приоритетные" table.
   local row
-  row=$(awk -F'|' '
-    /^\| *\*\*D-[0-9]+\*\*/ {
-      stage=$4; gsub(/^[ \t]+|[ \t]+$/, "", stage);
-      if (stage=="черновик") { print; exit }
+  row=$(awk '
+    /^## Приоритетные/ { in_priorities = 1; next }
+    in_priorities && /^## / { exit }
+    in_priorities && /^\|/ {
+      if ($0 ~ /^\|[[:space:]]*#/) next
+      if ($0 ~ /^\|[[:space:]]*-+/) next
+      # Skip finished rows: the priority table is ordered by draft number, so
+      # old published entries sit on top; taking the first row regardless of
+      # status resurfaced a May publication as "active" (#560, regression of #417).
+      if ($0 ~ /✅|опубликован|published/) next
+      print
+      exit
     }' "$draft_list")
   if [ -z "$row" ]; then
-    echo "**Активный черновик:** нет активных черновиков в draft-list.md"
+    echo "**Активный черновик:** нет активных черновиков (приоритетные пусты или все завершены)"
     return
   fi
   local dnum path
   dnum=$(echo "$row" | grep -oE 'D-[0-9]+' | head -1)
-  path=$(echo "$row" | grep -oE '\(\./[^)]+\)' | head -1 | tr -d '()' | sed 's#^\./#drafts/#')
+  path=$(echo "$row" | grep -oE '\([^)]*D-[0-9][^)]*\.md\)' | head -1 | tr -d '()' | sed 's#^\./#drafts/#')
   if [ -n "$path" ]; then
     echo "**Активный черновик:** [$dnum]($path)"
   else
@@ -1100,7 +1272,7 @@ SELF_DEV_BLOCK=$(render_self_dev)
 # section was removed as a duplicate of current/priorities.yaml + current/active-wp.md.
 # SWEEP_WP_LIST: WP-NNN IDs for the "План на сегодня" PENDING instructions (line ~973) —
 # tells the LLM which open WPs beyond priorities.yaml to consider for today's plan.
-SWEEP_WP_FULL=$(bash "${IWE_TEMPLATE:-$IWE/FMT-exocortex-template}/scripts/active-wp-sweep.sh" "$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/inbox" "$IWE" 2>/dev/null \
+SWEEP_WP_FULL=$(bash "$IWE/scripts/active-wp-sweep.sh" "$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/inbox" "$IWE" 2>/dev/null \
   || echo "<!-- active-wp-sweep: ошибка запуска -->")
 SWEEP_WP_LIST=$(echo "$SWEEP_WP_FULL" \
   | grep -oE '\*\*WP-[0-9]+\*\*' | tr -d '*' | tr '\n' ' ' | sed 's/  */ /g' || true)
@@ -1109,6 +1281,7 @@ SWEEP_WP_LIST=$(echo "$SWEEP_WP_FULL" \
 DAY_CLOSE_CARRY_OVER=$(extract_day_close_carry_over "$YDAY" | sed 's/^/  /')
 STRATEGY_CONTEXT=$(extract_strategy_context "$WEEK_NUM" | sed 's/^/  /')
 MORNING_PRIORITIES=$(read_morning_priorities | sed 's/^/  /')
+MANDATORY_DAILY_WPS=$(extract_mandatory_daily_wps 2>/dev/null)
 
 # Captured once (not inlined via $(...) in the heredoc below) so render_attention()
 # can read the same rendered text later without re-running server-news.sh a second
@@ -1158,7 +1331,7 @@ $SELF_DEV_BLOCK
 ЗАПРЕЩЕНО: включать в план РП, закрытые вчера (есть в «закрыто вчера» + ✅ в REGISTRY). Например, WP-362 закрыт — его нет в плане.
 
 После priorities.yaml — дополнить из carry-over и SWEEP_WP_LIST теми РП, которых нет в priorities.yaml и которые ещё open.
-Применить mandatory_daily_wps + daily_checkpoint_wps из day-rhythm-config.yaml.
+Каждый РП из «Обязательные ежедневные РП» ниже (если секция не пуста) ОБЯЗАН быть в таблице — источник уже разрешён детерминированно, не текстом конфига.
 KE-строка: bash $TEMPLATE_SCRIPTS_DIR/ke-queue-stats.sh --dayplan-row (реальный бюджет, не литерал «1h»).
 Active WPs to include (из sweep + WeekPlan union): $SWEEP_WP_LIST
 -->
@@ -1169,6 +1342,9 @@ ${MORNING_PRIORITIES:-  (не задано — обнови current/priorities.y
 **Стратегические приоритеты (из Strategy Session W${WEEK_NUM}):**
 ${STRATEGY_CONTEXT:-не найдены}
 
+**Обязательные ежедневные РП (mandatory_daily_wps):**
+${MANDATORY_DAILY_WPS:-  (не задано — day-rhythm-config.yaml не содержит активного ключа mandatory_daily_wps)}
+
 | 🚦 | ТВС | # | РП | h | Статус |
 |----|-----|---|-----|---|--------|
 | ⚫ | В | N | **Саморазвитие** — [тема] | 1-2 | pending |
@@ -1176,7 +1352,7 @@ ${STRATEGY_CONTEXT:-не найдены}
 
 > ТВС: **В** = Важное (развитие / критичное для R1-R6) · **Т** = Текущее (плановая работа) · **С** = Срочное (угроза конвейеру, дублируется в шапке 🚨)
 
-**Бюджет дня:** <!-- PENDING: budget — посчитать после плана, формат см. templates-dayplan.md (бюджет РП всего / физ / мультипликатор). -->
+**Бюджет дня:** $BUDGET_FORMAT_HINT
 
 **Mandatory check:** WP-7 (техдолг бота, ≥30 мин) + ≥1 контентный РП — <!-- PENDING: проверить наличие в плане -->
 

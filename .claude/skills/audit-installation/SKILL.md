@@ -47,10 +47,12 @@ Verdict выносит subagent в роли Аудитора, читая отч�
 Найти и запустить `iwe-audit.sh` через fallback-цепочку (author-mode → workspace, user-mode → `$IWE_SCRIPTS` из `~/.iwe-paths`):
 
 ```bash
-if [ -f "$HOME/IWE/scripts/iwe-audit.sh" ]; then
-    AUDIT_SCRIPT="$HOME/IWE/scripts/iwe-audit.sh"
-elif [ -n "${IWE_SCRIPTS:-}" ] && [ -f "$IWE_SCRIPTS/iwe-audit.sh" ]; then
+if [ -n "${IWE_SCRIPTS:-}" ] && [ -f "$IWE_SCRIPTS/iwe-audit.sh" ]; then
+    # $IWE_SCRIPTS first (#566): the hardcoded workspace copy, when it exists at
+    # all, is a stale leftover — the installer points IWE_SCRIPTS at the template.
     AUDIT_SCRIPT="$IWE_SCRIPTS/iwe-audit.sh"
+elif [ -f "$HOME/IWE/scripts/iwe-audit.sh" ]; then
+    AUDIT_SCRIPT="$HOME/IWE/scripts/iwe-audit.sh"
 else
     echo "iwe-audit.sh не найден. Если \$IWE_SCRIPTS не выставлен — выполни 'source \$HOME/.iwe-paths' (или перезапусти shell), затем повтори. Если файла .iwe-paths нет — запусти setup.sh из FMT-шаблона."
     exit 1
@@ -103,9 +105,23 @@ Coverage: N/4
 
 ### Алгоритм
 
-1. **Создать sentinel** (единое имя, не session-bound — v2, WP-7/BUGTRIAGE2, issue #237):
+1. **Создать sentinel** (единое имя для gate + capability владельца, issue #369):
    ```bash
-   echo "{\"created_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"session_id\":\"${CLAUDE_SESSION_ID:-noid}\",\"initiator\":\"audit-installation\"}" > /tmp/iwe-dry-run.flag
+   # issue #549 stage 1: never fall back to a shared "noid" — the Stop-hook
+   # cleans owner files by session id, and a mismatched id left the owner
+   # orphaned, permanently fail-closing every write tool. A self-generated
+   # gate id is unique per run; CLAUDE_SESSION_ID is used when present so the
+   # Stop-hook match still works in environments that do export it.
+   DRY_SID="${CLAUDE_SESSION_ID:-dry-$(date +%s)-$$}"
+   DRY_SAFE_SID=$(printf '%s' "$DRY_SID" | tr -cd 'A-Za-z0-9._-')
+   DRY_TOKEN=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')
+   DRY_OWNER="/tmp/iwe-dry-run-owner-${DRY_SAFE_SID:-noid}.token"
+   umask 077
+   printf '%s' "$DRY_TOKEN" > "$DRY_OWNER"
+   jq -nc --arg created "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sid "$DRY_SID" \
+     --arg token "$DRY_TOKEN" --arg owner "$DRY_OWNER" \
+     '{created_at:$created,session_id:$sid,initiator:"audit-installation",owner_token:$token,owner_file:$owner}' \
+     > /tmp/iwe-dry-run.flag
    ```
 2. **Запустить subagent** через Agent tool (subagent_type=general-purpose, модель Sonnet) с промптом:
 
@@ -144,7 +160,7 @@ Coverage: N/4
 
 ### Защита от sticky-sentinel
 
-Если subagent упал/завис → попытаться удалить sentinel явно (всегда). TTL 10 мин в самом хуке защищает от случаев, когда даже это не отработало (kill -9, краш CLI).
+Если subagent упал/завис → попытаться удалить sentinel явно (всегда). Stop владельца удалит capability-файл; чужой Stop не затронет защиту. TTL 10 мин в самом хуке защищает от случаев, когда даже это не отработало (kill -9, краш CLI).
 
 ## Шаг 3. Сборка единого отчёта
 
@@ -210,11 +226,9 @@ Coverage: N/4
 
 1. **Сохранить полный отчёт + verdict в файл:**
    ```bash
-   # Приоритет: workspace/scripts/ → $IWE_SCRIPTS (FMT-template/scripts/ для user-mode) → $HOME/IWE
-   if [ -d "$HOME/IWE/scripts" ]; then
-       AUDIT_LOG_DIR="$HOME/IWE/scripts"
-   elif [ -n "${IWE_SCRIPTS:-}" ] && [ -d "$IWE_SCRIPTS" ]; then
-       AUDIT_LOG_DIR="$IWE_SCRIPTS"
+   # Priority (#566): $IWE_SCRIPTS convention first, hardcode only as fallback → $HOME/IWE
+   if [ -d "${IWE_SCRIPTS:-$HOME/IWE/scripts}" ]; then
+       AUDIT_LOG_DIR="${IWE_SCRIPTS:-$HOME/IWE/scripts}"
    else
        AUDIT_LOG_DIR="$HOME/IWE"
    fi

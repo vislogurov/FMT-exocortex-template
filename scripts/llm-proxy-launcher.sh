@@ -2,8 +2,6 @@
 # llm-proxy-launcher.sh — обёртка для запуска llm-proxy.py с OpenRouter secrets (WP-366 Ф4.A)
 set -euo pipefail
 
-IWE="${IWE_ROOT:-${IWE_WORKSPACE:-$HOME/IWE}}"
-
 OPENROUTER_ENV="$HOME/.secrets/openrouter_key.env"
 if [ -f "$OPENROUTER_ENV" ]; then
   set -a
@@ -17,4 +15,4 @@ if [ -z "${OPENROUTER_API_KEY:-}" ]; then
 fi
 
 PORT="${1:-18765}"
-exec python3 "$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/scripts/llm-proxy.py" --port "$PORT"
+exec python3 "$HOME/IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/scripts/llm-proxy.py" --port "$PORT"
